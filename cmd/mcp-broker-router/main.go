@@ -7,14 +7,11 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"mime"
 	"net"
 	"net/http"
 	_ "net/http/pprof" //nolint:gosec // G108: intentional pprof endpoint for performance profiling
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -357,15 +354,6 @@ func setUpHTTPServer(address string, mcpBroker broker.MCPBroker, sessionManager 
 		w.WriteHeader(http.StatusOK)
 	})
 
-	mux.HandleFunc("GET /mcp", func(w http.ResponseWriter, r *http.Request) {
-		accept := r.Header.Get("Accept")
-		if acceptSSE(accept) {
-			streamableHTTPServer.ServeHTTP(w, r)
-			return
-		}
-		http.Error(w, "GET /mcp requires Accept: text/event-stream header for SSE streaming", http.StatusNotAcceptable)
-	})
-
 	mux.HandleFunc("/status", mcpBroker.HandleStatusRequest)
 	mux.HandleFunc("/status/", mcpBroker.HandleStatusRequest)
 	mux.Handle("/mcp", streamableHTTPServer)
@@ -434,35 +422,4 @@ func LoadConfig(path string) {
 			s.Hostname,
 		)
 	}
-}
-
-// acceptSSE checks if the Accept header includes text/event-stream with non-zero q
-
-func acceptSSE(accept string) bool {
-	accepts := strings.Split(accept, ",")
-	for _, a := range accepts {
-		a = strings.TrimSpace(a)
-		if a == "" {
-			continue
-		}
-		mediaType, params, err := mime.ParseMediaType(a)
-		if err != nil {
-			continue
-		}
-		if mediaType != "text/event-stream" {
-			continue
-		}
-		if qStr, ok := params["q"]; ok {
-			q, err := strconv.ParseFloat(qStr, 64)
-			if err != nil {
-				continue
-			}
-			if q > 0 {
-				return true
-			}
-		} else {
-			return true
-		}
-	}
-	return false
 }
