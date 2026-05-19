@@ -20,7 +20,7 @@ func (broker *mcpBrokerImpl) FilterPrompts(ctx context.Context, _ any, mcpReq *m
 	_, span := brokerTracer().Start(ctx, "mcp-broker.prompts-list", trace.WithAttributes(attrs...))
 	defer span.End()
 
-	broker.logger.Debug("FilterPrompts called", "input_prompts_count", len(mcpRes.Prompts))
+	broker.logger.DebugContext(ctx, "FilterPrompts called", "input_prompts_count", len(mcpRes.Prompts))
 	prompts := mcpRes.Prompts
 	emptyPrompts := []mcp.Prompt{}
 	if len(mcpRes.Prompts) == 0 {
