@@ -189,6 +189,10 @@
 
 - When a client that did NOT declare `capabilities.elicitation` in its initialize request calls a tool on a server with `tokenURLElicitation` configured and no cached token, the gateway should return a tool result with `isError: true` and a message about elicitation (not a -32042 JSON-RPC error). The client should not receive a URL for token submission.
 
+### [Happy,URLElicitation] 401 from upstream invalidates cached token and re-triggers elicitation
+
+- When a client has a valid cached token and an established backend session, and the upstream server rejects a subsequent tool call with 401 (simulated via `X-Force-Auth-Reject` header on the api-key-server), the gateway should delete the cached token and pass the 401 through. The next tool call should trigger a fresh -32042 elicitation error. The client can then re-submit the correct token and retry successfully.
+
 ### [Happy,URLElicitation] Server without tokenURLElicitation is unaffected
 
 - When an MCPServerRegistration does NOT have `tokenURLElicitation` configured and the backend does not require auth, tool calls should proceed without any token resolution or -32042 errors, regardless of whether the client declares elicitation capability.
