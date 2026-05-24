@@ -23,4 +23,5 @@ wait-test-servers: ## Wait for all test server deployments to be available
 	@$(KUBECTL) wait --for=condition=available --timeout=180s deployment/mcp-custom-path-server -n mcp-test
 	@$(KUBECTL) wait --for=condition=available --timeout=180s deployment/mcp-oidc-server -n mcp-test
 	@$(KUBECTL) wait --for=condition=available --timeout=180s deployment/everything-server -n mcp-test
+	@$(KUBECTL) wait --for=condition=available --timeout=180s deployment/mcp-tls-server -n mcp-test 2>/dev/null || true
 	@echo "All test servers ready"
