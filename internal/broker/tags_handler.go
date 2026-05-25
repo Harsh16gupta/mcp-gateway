@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/Kuadrant/mcp-gateway/internal/broker/upstream"
+	"github.com/Kuadrant/mcp-gateway/internal/config"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -83,6 +84,9 @@ func (m *mcpBrokerImpl) handleFilterToolsByTags(req mcp.CallToolRequest) (*mcp.C
 		if !ok {
 			return mcp.NewToolResultError("tags must be an array of strings"), nil
 		}
+		if s == "" {
+			return mcp.NewToolResultError("tags must not contain empty strings"), nil
+		}
 		filterTags = append(filterTags, s)
 	}
 
@@ -120,6 +124,28 @@ func (m *mcpBrokerImpl) handleFilterToolsByTags(req mcp.CallToolRequest) (*mcp.C
 	}
 
 	return m.marshalToolResult(matched), nil
+}
+
+// syncTagsTools registers or deregisters list_tags/filter_tools_by_tags based on
+// whether any server in the current config has tags. Caller must hold mcpLock.
+func (m *mcpBrokerImpl) syncTagsTools(ctx context.Context, servers []*config.MCPServer) {
+	hasTags := false
+	for _, s := range servers {
+		if len(s.Tags) > 0 {
+			hasTags = true
+			break
+		}
+	}
+
+	if hasTags && !m.tagsToolsRegistered.Load() {
+		m.logger.InfoContext(ctx, "registering tags tools")
+		m.registerTagsTools()
+		m.tagsToolsRegistered.Store(true)
+	} else if !hasTags && m.tagsToolsRegistered.Load() {
+		m.logger.InfoContext(ctx, "deregistering tags tools")
+		m.listeningMCPServer.DeleteTools(listTagsName, filterToolsByTagsName)
+		m.tagsToolsRegistered.Store(false)
+	}
 }
 
 func hasAllTags(serverTags, required []string) bool {

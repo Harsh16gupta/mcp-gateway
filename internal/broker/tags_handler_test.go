@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"testing"
@@ -92,19 +93,57 @@ func TestHandleFilterToolsByTags_empty_tags(t *testing.T) {
 	require.True(t, result.IsError)
 }
 
+func TestHandleFilterToolsByTags_empty_string_tag(t *testing.T) {
+	b := NewBroker(logger).(*mcpBrokerImpl)
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"tags": []any{"prod", ""}}
+
+	result, err := b.handleFilterToolsByTags(req)
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+}
+
 func TestHasAllTags(t *testing.T) {
 	require.True(t, hasAllTags([]string{"a", "b", "c"}, []string{"a", "b"}))
 	require.False(t, hasAllTags([]string{"a", "b"}, []string{"a", "c"}))
 	require.False(t, hasAllTags(nil, []string{"a"}))
 }
 
-func TestTagsTools_registered(t *testing.T) {
+func TestTagsTools_not_registered_at_startup(t *testing.T) {
 	b := NewBroker(logger).(*mcpBrokerImpl)
 	tools := b.listeningMCPServer.ListTools()
 	_, hasListTags := tools[listTagsName]
 	_, hasFilterTools := tools[filterToolsByTagsName]
-	require.True(t, hasListTags, "list_tags tool should be registered")
-	require.True(t, hasFilterTools, "filter_tools_by_tags tool should be registered")
+	require.False(t, hasListTags, "list_tags should not be registered without tags")
+	require.False(t, hasFilterTools, "filter_tools_by_tags should not be registered without tags")
+}
+
+func TestTagsTools_registered_when_tags_exist(t *testing.T) {
+	b := NewBroker(logger).(*mcpBrokerImpl)
+	servers := []*config.MCPServer{{Name: "s1", Tags: []string{"prod"}}}
+	b.syncTagsTools(context.Background(), servers)
+	require.True(t, b.tagsToolsRegistered.Load())
+	tools := b.listeningMCPServer.ListTools()
+	_, hasListTags := tools[listTagsName]
+	_, hasFilterTools := tools[filterToolsByTagsName]
+	require.True(t, hasListTags, "list_tags should be registered when tags exist")
+	require.True(t, hasFilterTools, "filter_tools_by_tags should be registered when tags exist")
+}
+
+func TestTagsTools_deregistered_when_tags_removed(t *testing.T) {
+	b := NewBroker(logger).(*mcpBrokerImpl)
+	servers := []*config.MCPServer{{Name: "s1", Tags: []string{"prod"}}}
+	b.syncTagsTools(context.Background(), servers)
+	require.True(t, b.tagsToolsRegistered.Load())
+
+	servers = []*config.MCPServer{{Name: "s1"}}
+	b.syncTagsTools(context.Background(), servers)
+	require.False(t, b.tagsToolsRegistered.Load())
+	tools := b.listeningMCPServer.ListTools()
+	_, hasListTags := tools[listTagsName]
+	_, hasFilterTools := tools[filterToolsByTagsName]
+	require.False(t, hasListTags, "list_tags should be deregistered when no tags")
+	require.False(t, hasFilterTools, "filter_tools_by_tags should be deregistered when no tags")
 }
 
 func createTestManagerWithTags(t *testing.T, serverName, prefix string, tools []mcp.Tool, tags []string) upstream.ActiveMCPServer {

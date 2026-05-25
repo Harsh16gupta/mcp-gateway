@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	mcpv1alpha1 "github.com/Kuadrant/mcp-gateway/api/v1alpha1"
@@ -97,6 +98,9 @@ type mcpBrokerImpl struct {
 
 	// scopeStore manages per-session tool scoping
 	scopeStore *scopeStore
+
+	// tagsToolsRegistered tracks whether list_tags/filter_tools_by_tags are currently registered
+	tagsToolsRegistered atomic.Bool
 }
 
 // this ensures that mcpBrokerImpl implements the MCPBroker interface
@@ -241,8 +245,6 @@ func NewBroker(logger *slog.Logger, opts ...Option) MCPBroker {
 		mcpBkr.registerDiscoveryTools()
 	}
 
-	mcpBkr.registerTagsTools()
-
 	return mcpBkr
 }
 
@@ -295,6 +297,8 @@ func (m *mcpBrokerImpl) OnConfigChange(ctx context.Context, conf *config.MCPServ
 			m.mcpServers[mcpServer.ID()] = manager.Start(ctx)
 		}
 	}
+	m.syncTagsTools(ctx, servers)
+
 	// register virtual servers
 	m.vsLock.Lock()
 	for _, vs := range virtualServers {
@@ -383,7 +387,7 @@ func (m *mcpBrokerImpl) GetServerInfoByPrompt(prompt string) (*config.MCPServer,
 // meta-tool. The router uses this to decide whether to pass a tools/call through
 // to the broker instead of looking for an upstream server.
 func (m *mcpBrokerImpl) IsBrokerToolName(name string) bool {
-	if name == listTagsName || name == filterToolsByTagsName {
+	if m.tagsToolsRegistered.Load() && (name == listTagsName || name == filterToolsByTagsName) {
 		return true
 	}
 	if !m.discovery.enabled {
