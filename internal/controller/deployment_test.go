@@ -1521,6 +1521,40 @@ func TestMergeEnvVars(t *testing.T) {
 			},
 		},
 		{
+			name: "removing oauth config strips managed oauth vars",
+			desired: []corev1.EnvVar{
+				{Name: "GATEWAY_SIGNING_KEY", ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "signing-key"},
+						Key:                  "key",
+					},
+				}},
+			},
+			existing: []corev1.EnvVar{
+				{Name: "GATEWAY_SIGNING_KEY", ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "signing-key"},
+						Key:                  "key",
+					},
+				}},
+				{Name: "OAUTH_RESOURCE_NAME", Value: "MCP Server"},
+				{Name: "OAUTH_RESOURCE", Value: "https://mcp.example.com/mcp"},
+				{Name: "OAUTH_AUTHORIZATION_SERVERS", Value: "https://keycloak/realms/mcp"},
+				{Name: "OAUTH_BEARER_METHODS_SUPPORTED", Value: "header"},
+				{Name: "OAUTH_SCOPES_SUPPORTED", Value: "basic"},
+				{Name: "LOG_LEVEL", Value: "debug"},
+			},
+			want: []corev1.EnvVar{
+				{Name: "GATEWAY_SIGNING_KEY", ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "signing-key"},
+						Key:                  "key",
+					},
+				}},
+				{Name: "LOG_LEVEL", Value: "debug"},
+			},
+		},
+		{
 			name: "managed oauth var in desired replaces existing value",
 			desired: []corev1.EnvVar{
 				{Name: "OAUTH_RESOURCE_NAME", Value: "new-name"},

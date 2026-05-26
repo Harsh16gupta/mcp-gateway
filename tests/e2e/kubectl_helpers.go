@@ -170,9 +170,11 @@ func IsTrustedHeadersEnabled(ctx context.Context) bool {
 }
 
 // SetOAuthProtectedResource patches the MCPGatewayExtension to set the oauthProtectedResource field.
-func SetOAuthProtectedResource(namespace, name string, authServers []string) error {
-	ctx := context.Background()
-	servers, _ := json.Marshal(authServers)
+func SetOAuthProtectedResource(ctx context.Context, namespace, name string, authServers []string) error {
+	servers, err := json.Marshal(authServers)
+	if err != nil {
+		return fmt.Errorf("failed to marshal authServers: %w", err)
+	}
 	patch := fmt.Sprintf(`{"spec":{"oauthProtectedResource":{"authorizationServers":%s}}}`, servers)
 	cmd := exec.CommandContext(ctx, "kubectl", "patch", "mcpgatewayextension", name,
 		"-n", namespace, "--type=merge", "-p", patch)
@@ -184,8 +186,7 @@ func SetOAuthProtectedResource(namespace, name string, authServers []string) err
 }
 
 // ClearOAuthProtectedResource removes the oauthProtectedResource field from the MCPGatewayExtension.
-func ClearOAuthProtectedResource(namespace, name string) error {
-	ctx := context.Background()
+func ClearOAuthProtectedResource(ctx context.Context, namespace, name string) error {
 	patch := `{"spec":{"oauthProtectedResource":null}}`
 	cmd := exec.CommandContext(ctx, "kubectl", "patch", "mcpgatewayextension", name,
 		"-n", namespace, "--type=merge", "-p", patch)

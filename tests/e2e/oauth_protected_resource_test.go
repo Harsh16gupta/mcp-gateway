@@ -14,22 +14,25 @@ import (
 
 var _ = Describe("OAuth Protected Resource via CRD", func() {
 	authServer := "https://keycloak.example.com/realms/mcp"
+	deploymentName := "mcp-gateway"
 
 	AfterEach(func() {
-		_ = ClearOAuthProtectedResource(SystemNamespace, MCPExtensionName)
+		_ = ClearOAuthProtectedResource(ctx, SystemNamespace, MCPExtensionName)
 		Eventually(func(g Gomega) {
-			g.Expect(WaitForDeploymentReady(ctx, SystemNamespace, "mcp-gateway")).To(Succeed())
+			g.Expect(WaitForDeploymentReady(ctx, SystemNamespace, deploymentName)).To(Succeed())
 		}, TestTimeoutMedium, TestRetryInterval).Should(Succeed())
 	})
 
 	It("[Happy] serves oauth-protected-resource metadata from CRD config", func() {
+		By("Capturing deployment generation before patching")
+		gen, err := GetDeploymentGeneration(ctx, SystemNamespace, deploymentName)
+		Expect(err).NotTo(HaveOccurred())
+
 		By("Setting oauthProtectedResource on the MCPGatewayExtension")
-		Expect(SetOAuthProtectedResource(SystemNamespace, MCPExtensionName, []string{authServer})).To(Succeed())
+		Expect(SetOAuthProtectedResource(ctx, SystemNamespace, MCPExtensionName, []string{authServer})).To(Succeed())
 
 		By("Waiting for the deployment to roll out with OAUTH env vars")
-		Eventually(func(g Gomega) {
-			g.Expect(WaitForDeploymentReady(ctx, SystemNamespace, "mcp-gateway")).To(Succeed())
-		}, TestTimeoutMedium, TestRetryInterval).Should(Succeed())
+		Expect(WaitForDeploymentReplicas(ctx, SystemNamespace, deploymentName, 1, gen)).To(Succeed())
 
 		By("Fetching /.well-known/oauth-protected-resource")
 		wellKnownURL := strings.TrimSuffix(gatewayURL, "/mcp") + "/.well-known/oauth-protected-resource"
@@ -54,13 +57,15 @@ var _ = Describe("OAuth Protected Resource via CRD", func() {
 	})
 
 	It("[Happy] reverts to defaults after oauthProtectedResource is removed", func() {
+		By("Capturing deployment generation before patching")
+		gen, err := GetDeploymentGeneration(ctx, SystemNamespace, deploymentName)
+		Expect(err).NotTo(HaveOccurred())
+
 		By("Setting oauthProtectedResource on the MCPGatewayExtension")
-		Expect(SetOAuthProtectedResource(SystemNamespace, MCPExtensionName, []string{authServer})).To(Succeed())
+		Expect(SetOAuthProtectedResource(ctx, SystemNamespace, MCPExtensionName, []string{authServer})).To(Succeed())
 
 		By("Waiting for the deployment to roll out with OAUTH env vars")
-		Eventually(func(g Gomega) {
-			g.Expect(WaitForDeploymentReady(ctx, SystemNamespace, "mcp-gateway")).To(Succeed())
-		}, TestTimeoutMedium, TestRetryInterval).Should(Succeed())
+		Expect(WaitForDeploymentReplicas(ctx, SystemNamespace, deploymentName, 1, gen)).To(Succeed())
 
 		By("Verifying well-known endpoint serves configured metadata")
 		wellKnownURL := strings.TrimSuffix(gatewayURL, "/mcp") + "/.well-known/oauth-protected-resource"
@@ -80,13 +85,15 @@ var _ = Describe("OAuth Protected Resource via CRD", func() {
 			g.Expect(servers).To(ContainElement(authServer))
 		}, TestTimeoutMedium, TestRetryInterval).Should(Succeed())
 
+		By("Capturing deployment generation before removing config")
+		gen, err = GetDeploymentGeneration(ctx, SystemNamespace, deploymentName)
+		Expect(err).NotTo(HaveOccurred())
+
 		By("Removing oauthProtectedResource from the MCPGatewayExtension")
-		Expect(ClearOAuthProtectedResource(SystemNamespace, MCPExtensionName)).To(Succeed())
+		Expect(ClearOAuthProtectedResource(ctx, SystemNamespace, MCPExtensionName)).To(Succeed())
 
 		By("Waiting for the deployment to roll out without OAUTH env vars")
-		Eventually(func(g Gomega) {
-			g.Expect(WaitForDeploymentReady(ctx, SystemNamespace, "mcp-gateway")).To(Succeed())
-		}, TestTimeoutMedium, TestRetryInterval).Should(Succeed())
+		Expect(WaitForDeploymentReplicas(ctx, SystemNamespace, deploymentName, 1, gen)).To(Succeed())
 
 		By("Verifying authorization_servers reverts to empty after config removal")
 		Eventually(func(g Gomega) {
