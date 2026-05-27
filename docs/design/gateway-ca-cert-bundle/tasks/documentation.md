@@ -21,7 +21,7 @@ When a platform engineer needs to rotate the CA certificate used by all upstream
 
 **Cover:**
 - Updating the CA bundle Secret
-- Propagation timing (60-120s kubelet sync + broker reload)
+- Propagation timing (~15-30s controller re-reconciliation + config watcher cycle)
 - How to verify the new CA is active (broker logs, server status)
 - Comparison with per-server CA rotation (N updates vs 1)
 
@@ -44,9 +44,10 @@ When a platform engineer is writing MCPGatewayExtension YAML, they want to know 
 **Cover:**
 - `caCertBundleRef` object (optional)
 - `caCertBundleRef.name` field (required, Secret name)
-- `caCertBundleRef.key` field (optional, defaults to `ca-bundle.crt`)
+- `caCertBundleRef.key` field (optional, defaults to `ca.crt`)
 - Secret requirements: must have `mcp.kuadrant.io/secret=true` label
 - Size limit: 256 KiB max
+- Config Secret size considerations: gateway bundle replaces N per-server copies with 1
 - Relationship to per-server `caCertSecretRef` (additive, not replacing)
 
 ## AGENTS.md Update
@@ -59,4 +60,4 @@ When an AI agent is working with this codebase, it needs to understand how the t
 - `MCPGatewayExtension.caCertBundleRef` field description
 - How it interacts with `MCPServerRegistration.caCertSecretRef`
 - Trust pool hierarchy: system roots → gateway bundle → per-server CA
-- Volume mount path and CLI flag
+- Config secret integration: `gatewayCACertPEM` field in `config.yaml`

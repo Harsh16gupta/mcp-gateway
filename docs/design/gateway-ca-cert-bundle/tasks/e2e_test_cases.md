@@ -35,8 +35,8 @@ tags: Happy,CACertBundle
 
 ### [CACertBundle] CA bundle rotation updates broker trust pool
 
-- When the CA bundle Secret is updated with a new CA certificate (e.g. after CA rotation), the broker should detect the change and rebuild its trust pool. After the update propagates, servers whose certificates are signed by the new CA should connect successfully. The propagation time depends on Kubernetes volume mount sync (60-120s).
+- When the CA bundle Secret is updated with a new CA certificate (e.g. after CA rotation), the controller should detect the change, re-validate the PEM, and write the updated `gatewayCACertPEM` into the config secret. The config change flows through `mcpConfig.Notify()`, triggering the broker to rebuild its trust pool. After the update propagates (~15-30s controller re-reconciliation), servers whose certificates are signed by the new CA should connect successfully.
 
-### [CACertBundle] Config secret does not contain duplicate CA PEM
+### [CACertBundle] Gateway CA stored once in config, not per-server
 
-- When an MCPGatewayExtension has `caCertBundleRef` set and multiple MCPServerRegistrations exist without `caCertSecretRef`, the config secret (`mcp-gateway-config`) should NOT contain inline CA PEM data for those servers. This verifies that the gateway-level CA bundle avoids config bloat — the CA is delivered via volume mount, not embedded in the config YAML.
+- When an MCPGatewayExtension has `caCertBundleRef` set and multiple MCPServerRegistrations exist without `caCertSecretRef`, the config secret (`mcp-gateway-config`) should contain the CA PEM exactly once under the `gatewayCACertPEM` key, and individual server entries should NOT have inline `caCert` values. This verifies that the gateway-level CA bundle eliminates per-server CA duplication in the config.

@@ -16,10 +16,14 @@ Design: `docs/design/gateway-ca-cert-bundle/gateway-ca-cert-bundle-design.md`
 5. **Broker upstream**: `buildHTTPClient()` creates custom `*http.Client` with CA appended to system roots (`internal/broker/upstream/mcp.go:46-69`)
 6. **Broker connect**: passes custom client via `transport.WithHTTPBasicClient()` (`internal/broker/upstream/mcp.go:140-146`)
 
+### Config secret flow
+- `BrokerConfig` in `internal/config/types.go:169-172` — holds servers + virtual servers, serialized as `config.yaml` in `mcp-gateway-config` Secret
+- `SecretReaderWriter` in `internal/config/config_writer.go` — read-modify-write pattern with retry on conflict
+- `mcpConfig.Notify()` — observer pattern that notifies broker of config changes
+
 ### MCPGatewayExtension controller
 - `reconcileActive()` in `mcpgatewayextension_controller.go` — orchestrates Deployment, Service, HTTPRoutes, EnvoyFilter
 - `reconcileBrokerRouter()` — creates/updates the broker-router Deployment with volumes, env vars, and args
-- Existing volume mount pattern: aggregated credentials secret is already mounted as a volume
 
 ## Implementation Order
 
@@ -29,13 +33,13 @@ Tasks are ordered by dependency.
 
 **Files:**
 - `api/v1alpha1/mcpgatewayextension_types.go` — add `CACertBundleRef *CACertBundleReference` to `MCPGatewayExtensionSpec`
-- `api/v1alpha1/mcpgatewayextension_types.go` — add `CACertBundleReference` struct with `Name` and `Key` (default `ca-bundle.crt`)
-- `internal/config/types.go` — add `GatewayCACertBundle string` to `MCPServersConfig`
+- `api/v1alpha1/mcpgatewayextension_types.go` — add `CACertBundleReference` struct with `Name` and `Key` (default `ca.crt`)
+- `internal/config/types.go` — add `GatewayCACertPEM string` to `BrokerConfig`
 - Run `make generate-all` to regenerate deepcopy, CRDs, sync Helm
 
 **Acceptance criteria:**
-- [ ] CRD accepts `caCertBundleRef` with `name` (required) and `key` (optional, default `ca-bundle.crt`)
-- [ ] `MCPServersConfig` has `GatewayCACertBundle` field
+- [ ] CRD accepts `caCertBundleRef` with `name` (required) and `key` (optional, default `ca.crt`)
+- [ ] `BrokerConfig` has `GatewayCACertPEM` field serialized as `gatewayCACertPEM` in YAML
 - [ ] `make generate-all && make lint` passes
 - [ ] Existing tests pass without changes
 
@@ -43,48 +47,43 @@ Tasks are ordered by dependency.
 
 ---
 
-### Task 2: MCPGatewayExtension controller — validation + volume mount
+### Task 2: MCPGatewayExtension controller — validation + config write
 
 Depends on: Task 1.
 
 **Files:**
 - `internal/controller/mcpgatewayextension_controller.go` — add `reconcileCACertBundle()`:
-  1. If `caCertBundleRef` is nil, skip
+  1. If `caCertBundleRef` is nil, skip (clear any existing `GatewayCACertPEM` from config)
   2. Read the referenced Secret via `DirectAPIReader`
   3. Validate: exists, has `mcp.kuadrant.io/secret=true` label, key exists, size ≤ 256 KiB, valid PEM
-  4. Set status condition on error
-- `internal/controller/broker_router.go` — modify `reconcileBrokerRouter()`:
-  1. If `caCertBundleRef` is set, add Secret volume + volume mount to Deployment
-  2. Add `--ca-cert-bundle-path=/etc/mcp-gateway/ca/<key>` arg to broker container
-  3. Add annotation hash of CA bundle content for rollout triggers
+  4. Write CA PEM into `config.yaml` under `gatewayCACertPEM` key via `SecretReaderWriter`
+  5. Set status condition on error
 - `internal/controller/mcpgatewayextension_controller.go` — add Secret watch for labeled Secrets (already exists for MCPServerRegistration, extend to MCPGatewayExtension)
 - `internal/controller/mcpgatewayextension_controller_test.go` — unit tests
 
-**Volume details:**
-- Volume name: `ca-cert-bundle`
-- Mount path: `/etc/mcp-gateway/ca/`
-- Read-only: true
-
 **Acceptance criteria:**
-- [ ] Valid CA bundle secret → volume mounted, arg added, status Ready
+- [ ] Valid CA bundle secret → `gatewayCACertPEM` written to config, status Ready
 - [ ] Missing secret → status condition with error message
 - [ ] Missing label → status condition with error message
 - [ ] Invalid PEM → status condition with error message
 - [ ] Size exceeds 256 KiB → status condition with error message
-- [ ] Secret update triggers Deployment rollout via annotation hash
-- [ ] No `caCertBundleRef` → no volume, no arg (backward compatible)
+- [ ] Secret update triggers re-reconciliation and config update
+- [ ] Config update flows through `mcpConfig.Notify()` for observer synchronization
+- [ ] No `caCertBundleRef` → no `gatewayCACertPEM` in config (backward compatible)
 
 **Verification:** `make lint && make test-unit && make test-controller-integration`
 
 ---
 
-### Task 3: Broker — load gateway CA bundle + build base trust pool
+### Task 3: Broker — read gateway CA bundle from config + build base trust pool
 
 Depends on: Task 2.
 
 **Files:**
-- `cmd/mcp-broker-router/main.go` — add `--ca-cert-bundle-path` flag, pass to broker
-- `internal/broker/broker.go` — add `CACertBundlePath string` field, load PEM from file at startup, build base `*x509.CertPool`
+- `internal/broker/broker.go` — in `OnConfigChange()`:
+  1. Read `GatewayCACertPEM` from config
+  2. If non-empty, build base `*x509.CertPool` from system roots + gateway CA
+  3. Store as shared base pool for all server connections
 - `internal/broker/upstream/mcp.go` — modify `buildHTTPClient()`:
   1. Accept an optional base `*x509.CertPool` parameter (the gateway CA bundle pool)
   2. Clone the base pool (or system roots if nil)
@@ -93,53 +92,30 @@ Depends on: Task 2.
 - `internal/broker/upstream/mcp_test.go` — unit tests for combined pool behavior
 
 **Acceptance criteria:**
-- [ ] `--ca-cert-bundle-path` flag parsed and plumbed to broker
-- [ ] Broker loads PEM from file at startup, logs cert count
+- [ ] Broker reads `GatewayCACertPEM` from config on change
 - [ ] `buildHTTPClient()` uses base pool when available
 - [ ] Per-server `CACert` appends to base pool (not replaces)
-- [ ] No `--ca-cert-bundle-path` → behavior identical to current (system roots only)
-- [ ] Invalid PEM file → broker logs error, falls back to system roots
+- [ ] No `GatewayCACertPEM` in config → behavior identical to current (system roots only)
+- [ ] Invalid PEM in config → broker logs error, falls back to system roots
 
 **Verification:** `make test-unit`
 
 ---
 
-### Task 4: Broker — file watch for CA bundle hot reload
+### Task 4: MCPServerRegistration controller — skip embedding shared CAs in config
 
-Depends on: Task 3.
-
-**Files:**
-- `internal/broker/broker.go` — add file watcher for `CACertBundlePath`:
-  1. Watch for file changes via `fsnotify` or polling (Kubernetes volume mount propagation)
-  2. On change, rebuild base `*x509.CertPool`
-  3. Re-register all servers to pick up new trust pool
-- `internal/broker/broker_test.go` — unit tests for reload
-
-**Acceptance criteria:**
-- [ ] File change detected and pool rebuilt
-- [ ] All servers re-registered with new pool
-- [ ] Log message on reload: `reloaded gateway CA bundle certs=N`
-- [ ] No crash on temporary file absence during Secret rotation
-- [ ] No `--ca-cert-bundle-path` → no watcher started
-
-**Verification:** `make test-unit`
-
----
-
-### Task 5: MCPServerRegistration controller — stop embedding shared CAs in config
-
-Depends on: Task 2. Independent of Tasks 3-4 (controller-side only).
+Depends on: Task 2.
 
 **Files:**
 - `internal/controller/mcpserverregistration_controller.go` — modify config building:
-  1. If the server's `caCertSecretRef` points to the same Secret as the gateway's `caCertBundleRef`, skip embedding `CACert` in the config (it's already mounted as a volume)
+  1. If the server's `caCertSecretRef` points to the same Secret as the gateway's `caCertBundleRef`, skip embedding `CACert` in the per-server config (it's already in `gatewayCACertPEM`)
   2. If different Secret, continue embedding as before
 - `internal/controller/mcpserverregistration_controller_integration_test.go` — integration tests
 
-**Note:** This is an optimization, not strictly required. Without it, the broker receives the CA both via volume mount and inline config — functionally correct but wasteful. This task prevents the duplication that motivates the feature.
+**Note:** This is an optimization. Without it, the broker receives the CA both via `gatewayCACertPEM` and per-server `CACert` — functionally correct (additive) but wasteful. This task prevents the duplication that motivates the feature.
 
 **Acceptance criteria:**
-- [ ] Server CA that matches gateway bundle → `CACert` omitted from config
+- [ ] Server CA that matches gateway bundle → `CACert` omitted from per-server config
 - [ ] Server CA that differs from gateway bundle → `CACert` embedded as before
 - [ ] No gateway bundle configured → all server CAs embedded as before
 
@@ -147,9 +123,9 @@ Depends on: Task 2. Independent of Tasks 3-4 (controller-side only).
 
 ---
 
-### Task 6: Documentation and guide updates
+### Task 5: Documentation and guide updates
 
-Depends on: Tasks 1–4.
+Depends on: Tasks 1–3.
 
 **Files:**
 - `docs/guides/custom-ca-certificates.md` — add section for gateway-level CA bundle
@@ -163,9 +139,9 @@ Depends on: Tasks 1–4.
 
 ---
 
-### Task 7: E2E tests
+### Task 6: E2E tests
 
-Depends on: Tasks 1–4.
+Depends on: Tasks 1–3.
 
 **Files:**
 - `tests/e2e/ca_bundle_test.go` (new) — E2E test cases

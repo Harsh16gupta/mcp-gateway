@@ -17,7 +17,6 @@ Add a `caCertBundleRef` field to `MCPGatewayExtension` that references a shared 
 - Eliminate CA PEM duplication in the config secret when multiple servers share the same CA
 - Reduce operational burden for CA rotation to a single Secret update
 - Maintain backward compatibility — existing `caCertSecretRef` on `MCPServerRegistration` continues to work identically
-- Keep the CA PEM data out of the per-server config entries in the config secret
 
 ## Non-Goals
 
@@ -64,7 +63,7 @@ spec:
     sectionName: mcp
   caCertBundleRef:
     name: shared-ca-bundle
-    key: ca-bundle.crt    # optional, defaults to "ca-bundle.crt"
+    key: ca.crt    # optional, defaults to "ca.crt"
 ```
 
 ```go
@@ -88,65 +87,64 @@ type CACertBundleReference struct {
     Name string `json:"name,omitempty"`
 
     // key is the key within the Secret that contains the CA bundle PEM data.
-    // If not specified, defaults to "ca-bundle.crt".
+    // If not specified, defaults to "ca.crt".
     // +optional
-    // +default="ca-bundle.crt"
+    // +default="ca.crt"
     Key string `json:"key,omitempty"`
 }
 ```
 
-The default key is `ca-bundle.crt` (not `ca.crt`) to distinguish from per-server CA secrets and align with common Kubernetes conventions (e.g. OpenShift's `ca-bundle.crt` in ConfigMaps).
+The default key is `ca.crt` — the same default used by per-server `caCertSecretRef`. This means a user can promote an existing per-server CA Secret to gateway-level without creating a new Secret or changing keys.
 
 #### Config Type Changes
 
-`MCPServersConfig` in `internal/config/types.go` gains a field for the gateway-level CA bundle:
+`BrokerConfig` in `internal/config/types.go` gains a field for the gateway-level CA bundle:
 
 ```go
-type MCPServersConfig struct {
-    // ... existing fields ...
-
-    // GatewayCACertBundle is the PEM-encoded CA bundle from MCPGatewayExtension.
-    // Loaded once by the broker, not embedded per-server.
-    GatewayCACertBundle string
+type BrokerConfig struct {
+    Servers          []MCPServer           `json:"servers"          yaml:"servers"`
+    VirtualServers   []VirtualServerConfig `json:"virtualServers,omitempty" yaml:"virtualServers,omitempty"`
+    GatewayCACertPEM string                `json:"gatewayCACertPEM,omitempty" yaml:"gatewayCACertPEM,omitempty"`
 }
 ```
 
-This field is not serialized into the per-server config YAML — it is passed to the broker via a separate volume mount of the CA Secret, avoiding config secret bloat.
+The gateway CA bundle PEM is written once into the existing `mcp-gateway-config` Secret alongside the server list. The broker reads it from the same config source — no separate Secrets or volume mounts. Servers that share the gateway CA no longer need individual `CACert` entries, reducing the per-server duplication from N copies to 1.
 
 ### Architecture
 
 #### How the CA Bundle Reaches the Broker
 
+The gateway CA bundle uses the same config path as everything else — the `mcp-gateway-config` Secret:
+
 ```
-MCPGatewayExtension                Broker Pod
-┌──────────────────┐         ┌────────────────────────┐
-│ caCertBundleRef: │         │                        │
-│   name: shared-  │────────▶│  Volume Mount:         │
-│         ca-bundle│         │  /etc/mcp-gateway/ca/  │
-│   key: ca-bundle │         │    ca-bundle.crt       │
-│         .crt     │         │                        │
-└──────────────────┘         │  Broker reads at       │
-                             │  startup + watches     │
-                             │  for changes           │
-                             └────────────────────────┘
+MCPGatewayExtension              Controller                     Broker
+┌──────────────────┐     ┌──────────────────────┐     ┌────────────────────┐
+│ caCertBundleRef: │     │ Reads CA Secret,      │     │                    │
+│   name: shared-  │────▶│ validates PEM,        │────▶│ Reads config.yaml  │
+│         ca-bundle│     │ writes PEM into       │     │ extracts           │
+│   key: ca.crt    │     │ config.yaml under     │     │ gatewayCACertPEM,  │
+└──────────────────┘     │ gatewayCACertPEM key  │     │ builds base cert   │
+                         └──────────────────────┘     │ pool               │
+                                                      └────────────────────┘
 ```
 
 The MCPGatewayExtension controller:
 1. Validates the referenced CA Secret exists, has the required label, contains valid PEM, and is within size limits
-2. Adds the Secret as a volume mount on the broker-router Deployment
-3. Passes the mount path via a command-line flag `--ca-cert-bundle-path=/etc/mcp-gateway/ca/ca-bundle.crt`
+2. Writes the CA PEM into the `mcp-gateway-config` Secret's `config.yaml` under the `gatewayCACertPEM` key
+3. Existing config watcher detects the Secret update and calls `mcpConfig.Notify()` to trigger observers
 
 The broker:
-1. Reads the CA bundle PEM from the file at startup
-2. Builds a base `*x509.CertPool` from system roots + gateway CA bundle
+1. Receives config via `OnConfigChange()` (the existing observer pattern)
+2. Reads `GatewayCACertPEM` from the config, builds a base `*x509.CertPool` from system roots + gateway CA bundle
 3. For each upstream server, clones this base pool and appends any per-server CA from the config (if `CACert` is set on the `MCPServer`)
-4. Watches the file for changes (Kubernetes volume mount propagation) and rebuilds the pool on update
+
+Using the existing config Secret ensures **atomic updates** — the server list and CA bundle are always in sync. There is no timing window where the broker has a new server config but not yet the CA needed to connect.
 
 #### Trust Pool Construction
 
 ```
 System Root CAs (Go default)
-         ├── + Gateway CA Bundle (from caCertBundleRef)
+         ├── + Gateway CA Bundle (from gatewayCACertPEM in config)
          │        = Base Trust Pool (shared by all servers)
          │
          ├── Server A: uses base pool only (no caCertSecretRef)
@@ -182,32 +180,26 @@ The MCPGatewayExtension controller validates `caCertBundleRef` during reconcilia
 
 The size limit is 256 KiB (vs 64 KiB for per-server CAs) because a shared bundle typically contains multiple CA certificates (root + intermediates, or multiple issuer CAs).
 
-### Volume Mount Strategy
+### Config Secret Strategy
 
-The CA bundle Secret is mounted as a read-only volume, not embedded in the config secret. This:
+The CA bundle PEM is written into the existing `mcp-gateway-config` Secret as the `gatewayCACertPEM` field in `config.yaml`. This:
 
-1. **Avoids config bloat** — the CA PEM is not duplicated per-server in the config YAML
-2. **Enables hot reload** — Kubernetes propagates Secret updates to volume mounts (60-120s kubelet sync), and the broker watches the file for changes
-3. **Follows the existing pattern** — the aggregated credentials secret is already mounted as a volume on the broker-router Deployment
+1. **Atomic updates** — config and CA bundle are in the same Secret, so the broker always sees a consistent snapshot. No timing window where a server appears before its CA is available.
+2. **Single config source** — no separate Secrets or volume mounts to synchronize. The broker reads everything from one place.
+3. **Reduces per-server duplication** — the gateway CA is written once. Servers sharing it no longer embed individual `CACert` values, so the net effect is a reduction from N copies to 1.
 
-Mount details:
-- Volume name: `ca-cert-bundle`
-- Mount path: `/etc/mcp-gateway/ca/`
-- File: `ca-bundle.crt` (or the configured key)
-- Read-only: true
+The gateway bundle does add to the config Secret size, but since it replaces N per-server copies with 1, the net effect is always a reduction when multiple servers share the same CA. If the config Secret approaches the 1 MiB Kubernetes limit (e.g. many servers each with *different* CAs plus a large gateway bundle), operators can deploy multiple `MCPGatewayExtension` instances to partition servers across gateways.
 
 ### CA Bundle Rotation
 
 When the CA bundle Secret is updated:
 
 1. The MCPGatewayExtension controller detects the Secret update (via watch on labeled Secrets)
-2. The controller re-validates the PEM and updates the Deployment annotation hash to trigger a rollout (if the content changed)
-3. Kubernetes propagates the new Secret data to the volume mount (60-120s)
-4. The broker detects the file change, rebuilds the base trust pool, and re-registers all servers that use it
+2. The controller re-validates the PEM and writes the updated `gatewayCACertPEM` into the config Secret
+3. The config watcher detects the config Secret change and calls `mcpConfig.Notify()`
+4. The broker's `OnConfigChange()` observer rebuilds the base trust pool and re-registers servers
 
-End-to-end propagation: ~60-120 seconds (dominated by kubelet volume sync).
-
-**Alternative: file watch without rollout.** If rollout restarts are undesirable (they briefly interrupt all connections), the broker can use `fsnotify` to watch the mounted file and rebuild the cert pool in-place. This avoids pod restarts but relies on volume mount propagation being timely. Both strategies should be evaluated during implementation.
+End-to-end propagation: ~15-30 seconds (controller re-reconciliation + config watcher cycle). This is faster than the previous volume-mount approach since it does not depend on kubelet volume sync (60-120s).
 
 ## Security Considerations
 
@@ -215,6 +207,7 @@ End-to-end propagation: ~60-120 seconds (dominated by kubelet volume sync).
 - **No new trust** — the gateway CA bundle extends the system root pool, it does not replace it. Servers that work today with publicly-trusted CAs continue to work without changes
 - **Additive-only** — per-server CAs always append to the gateway bundle, never override. An operator cannot accidentally remove trust for a server by setting the gateway bundle
 - **Size limit** — 256 KiB prevents accidental inclusion of large files. This is generous enough for typical CA chains (~20-30 CAs at ~2 KiB each)
+- **Config Secret size** — the gateway CA bundle contributes to the 1 MiB Kubernetes Secret limit, but since it replaces N per-server copies with 1, the net size is always smaller when servers share a CA. For extreme cases, operators can partition servers across multiple gateways
 
 ## Future Considerations
 
