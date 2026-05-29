@@ -81,7 +81,6 @@ func (a *app) setUpHTTPServer() {
 		server.WithStreamableHTTPServer(httpSrv),
 	}
 	if a.jwtMgr != nil {
-		a.logger.Debug("jwt session manager configured")
 		streamableHTTPOpts = append(streamableHTTPOpts, server.WithSessionIdManager(a.jwtMgr))
 	}
 	streamableHTTPServer := server.NewStreamableHTTPServer(a.mcpBroker.MCPServer(), streamableHTTPOpts...)

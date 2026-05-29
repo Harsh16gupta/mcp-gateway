@@ -48,12 +48,14 @@ type commonConfig struct {
 }
 
 type routerConfig struct {
+	// commonConfig is to be considered imutable
 	commonConfig
 	addr               string
 	maxRequestBodySize int
 }
 
 type brokerConfig struct {
+	// commonConfig is to be considered imutable
 	commonConfig
 	addr                       string
 	writeTimeoutSecs           int64
