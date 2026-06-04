@@ -122,8 +122,8 @@ Check that dependencies are current and clean.
 - Known vulnerabilities — `govulncheck ./...` if available
 
 **How to run:**
-- `go mod tidy` dry run: `cp go.sum go.sum.bak && go mod tidy && diff go.sum go.sum.bak; mv go.sum.bak go.sum` (restore after)
-- `go list -m -u all 2>/dev/null | grep '\[' ` — shows deps with available updates
+- `go mod tidy` dry run: `go mod tidy -diff` (exits non-zero if changes needed, no files modified)
+- `go list -m -u all 2>/dev/null | grep '\['` — shows deps with available updates
 - `govulncheck ./...` — only if installed; skip gracefully if not
 
 **Do NOT:** Recommend upgrading major versions without noting breaking change risk.
@@ -156,7 +156,7 @@ False positives destroy trust in the report. One wrong finding makes the user qu
 
 Format:
 
-```
+```markdown
 ## Code Maintenance Report — [project name]
 
 ### Summary
