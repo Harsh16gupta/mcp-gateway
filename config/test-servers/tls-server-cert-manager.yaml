@@ -65,7 +65,7 @@ spec:
   duration: 8760h
   dnsNames:
     - mcp-tls-server.mcp-test.svc.cluster.local
-    - tls-server.mcp-tls.local
+    - tls-server.mcp-gateway.local
   issuerRef:
     name: private-ca-issuer
     kind: ClusterIssuer
