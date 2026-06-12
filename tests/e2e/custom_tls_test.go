@@ -41,7 +41,6 @@ const (
 	githubMCPHost = "api.githubcopilot.com"
 	githubMCPPort = int32(443)
 	githubMCPPath = "/mcp"
-
 )
 
 var _ = Describe("Custom TLS Configuration", Ordered, func() {

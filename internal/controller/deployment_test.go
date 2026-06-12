@@ -1683,10 +1683,10 @@ func TestMergeVolumes(t *testing.T) {
 		want     []corev1.Volume
 	}{
 		{
-			name:    "no user volumes",
-			desired: []corev1.Volume{{Name: "config-volume"}},
+			name:     "no user volumes",
+			desired:  []corev1.Volume{{Name: "config-volume"}},
 			existing: []corev1.Volume{{Name: "config-volume"}},
-			want:    []corev1.Volume{{Name: "config-volume"}},
+			want:     []corev1.Volume{{Name: "config-volume"}},
 		},
 		{
 			name:    "preserves user volumes from existing",
