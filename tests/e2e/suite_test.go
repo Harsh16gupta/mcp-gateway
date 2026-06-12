@@ -207,7 +207,6 @@ var _ = AfterSuite(func() {
 	}
 	_ = k8sClient.Delete(ctx, caBundle)
 	_ = RemoveDeploymentCommandFlag(ctx, SystemNamespace, "mcp-gateway", "--gateway-ca-cert=/certs/gateway-ca.crt")
-	_ = RemoveDeploymentCommandFlag(ctx, SystemNamespace, "mcp-gateway", "--log-level=-4")
 	_ = RemoveDeploymentVolumeMount(ctx, SystemNamespace, "mcp-gateway", "gateway-ca")
 	_ = RemoveDeploymentVolume(ctx, SystemNamespace, "mcp-gateway", "gateway-ca")
 
